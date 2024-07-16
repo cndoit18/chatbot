@@ -15,16 +15,11 @@ import (
 
 func main() {
 	client := http.Client{}
-	client.Transport = HandleAeuthnticate(http.DefaultTransport, os.Getenv("APP_ID"), os.Getenv("TOKEN"))
-	resp, err := client.Get("https://sandbox.api.sgroup.qq.com/users/@me")
+	client.Transport = HandleAeuthnticate(HandleLogger(http.DefaultTransport), os.Getenv("APP_ID"), os.Getenv("TOKEN"))
+	_, err := client.Get("https://sandbox.api.sgroup.qq.com/users/@me")
 	if err != nil {
 		panic(err)
 	}
-	data, err := httputil.DumpResponse(resp, true)
-	if err != nil {
-		panic(err)
-	}
-	log.Println(string(data))
 
 }
 
@@ -34,6 +29,26 @@ func (f TransportFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func HandleLogger(transport http.RoundTripper) http.RoundTripper {
+	return TransportFunc(func(req *http.Request) (*http.Response, error) {
+		r, err := httputil.DumpRequest(req, true)
+		if err != nil {
+			return nil, fmt.Errorf("dump request failed: %w", err)
+		}
+		log.Println(string(r))
+		resp, rerr := transport.RoundTrip(req)
+		if rerr != nil {
+			return resp, rerr
+		}
+		data, err := httputil.DumpResponse(resp, true)
+		if err != nil {
+			return nil, fmt.Errorf("dump response failed: %w", err)
+		}
+		log.Println(string(data))
+		return resp, nil
+	})
+}
+
 func HandleAeuthnticate(transport http.RoundTripper, appID string, token string) http.RoundTripper {
 	signal := struct {
 		AccessToken string
@@ -41,9 +56,10 @@ func HandleAeuthnticate(transport http.RoundTripper, appID string, token string)
 	}{}
 	lock := sync.RWMutex{}
 	return TransportFunc(func(req *http.Request) (*http.Response, error) {
-		lock.Lock()
-		defer lock.Unlock()
+		lock.RLock()
 		if signal.Expire.Before(time.Now()) {
+			lock.RUnlock()
+			lock.Lock()
 			client := http.Client{
 				Transport: transport,
 			}
@@ -67,9 +83,12 @@ func HandleAeuthnticate(transport http.RoundTripper, appID string, token string)
 			}
 			signal.AccessToken = structureBody.AccessToken
 			signal.Expire = time.Now().Add(time.Second * time.Duration(expiresIn))
+			lock.Unlock()
+			lock.RLock()
 		}
 		req.Header.Set("Authorization", "QQBot "+signal.AccessToken)
 		req.Header.Set("X-Union-Appid", appID)
+		lock.RUnlock()
 		return transport.RoundTrip(req)
 	})
 }

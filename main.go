@@ -1,31 +1,75 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
+	"net/http/httputil"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
-
-	"github.com/tencent-connect/botgo"
-	"github.com/tencent-connect/botgo/token"
 )
 
-func must[T any](u T, err error) T {
+func main() {
+	client := http.Client{}
+	client.Transport = HandleAeuthnticate(http.DefaultTransport, os.Getenv("APP_ID"), os.Getenv("TOKEN"))
+	resp, err := client.Get("https://sandbox.api.sgroup.qq.com/users/@me")
 	if err != nil {
 		panic(err)
 	}
-	return u
+	data, err := httputil.DumpResponse(resp, true)
+	if err != nil {
+		panic(err)
+	}
+	log.Println(string(data))
+
 }
 
-func main() {
-	token := token.BotToken(must(strconv.ParseUint(os.Getenv("APP_ID"), 10, 32)), os.Getenv("TOKEN"))
-	api := botgo.NewOpenAPI(token).WithTimeout(3 * time.Second)
-	ctx := context.Background()
+type TransportFunc func(req *http.Request) (*http.Response, error)
 
-	ws, err := api.WS(ctx, nil, "")
-	log.Printf("%+v, err:%v", ws, err)
+func (f TransportFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
-	me, err := api.Me(ctx)
-	log.Printf("%+v, err:%v", me, err)
+func HandleAeuthnticate(transport http.RoundTripper, appID string, token string) http.RoundTripper {
+	signal := struct {
+		AccessToken string
+		Expire      time.Time
+	}{}
+	lock := sync.RWMutex{}
+	return TransportFunc(func(req *http.Request) (*http.Response, error) {
+		lock.Lock()
+		defer lock.Unlock()
+		if signal.Expire.Before(time.Now()) {
+			client := http.Client{
+				Transport: transport,
+			}
+			resp, err := client.Post("https://bots.qq.com/app/getAppAccessToken",
+				"application/json",
+				strings.NewReader(`{"appId":"`+appID+`","clientSecret":"`+token+`"}`))
+			if err != nil {
+				return nil, fmt.Errorf("get access token failed: %w", err)
+			}
+			structureBody := struct {
+				AccessToken string `json:"access_token"`
+				ExpiresIn   string `json:"expires_in"`
+			}{}
+			defer resp.Body.Close()
+			if err := json.NewDecoder(resp.Body).Decode(&structureBody); err != nil {
+				return nil, fmt.Errorf("decode response failed: %w", err)
+			}
+			expiresIn, err := strconv.ParseInt(structureBody.ExpiresIn, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("parse expires_in failed: %w", err)
+			}
+			signal.AccessToken = structureBody.AccessToken
+			signal.Expire = time.Now().Add(time.Second * time.Duration(expiresIn))
+		}
+		req.Header.Set("Authorization", "QQBot "+signal.AccessToken)
+		req.Header.Set("X-Union-Appid", appID)
+		return transport.RoundTrip(req)
+	})
 }

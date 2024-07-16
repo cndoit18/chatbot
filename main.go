@@ -15,7 +15,7 @@ import (
 
 func main() {
 	client := http.Client{}
-	client.Transport = HandleAeuthnticate(HandleLogger(http.DefaultTransport), os.Getenv("APP_ID"), os.Getenv("TOKEN"))
+	client.Transport = HandleAeuthnticate(HandleLogger(http.DefaultTransport), os.Getenv("APP_ID"), os.Getenv("APP_SECRET"))
 	_, err := client.Get("https://sandbox.api.sgroup.qq.com/users/@me")
 	if err != nil {
 		panic(err)
@@ -49,23 +49,21 @@ func HandleLogger(transport http.RoundTripper) http.RoundTripper {
 	})
 }
 
-func HandleAeuthnticate(transport http.RoundTripper, appID string, token string) http.RoundTripper {
+func HandleAeuthnticate(transport http.RoundTripper, appID string, appSecret string) http.RoundTripper {
 	signal := struct {
 		AccessToken string
 		Expire      time.Time
 	}{}
 	lock := sync.RWMutex{}
 	return TransportFunc(func(req *http.Request) (*http.Response, error) {
-		lock.RLock()
+		lock.Lock()
 		if signal.Expire.Before(time.Now()) {
-			lock.RUnlock()
-			lock.Lock()
 			client := http.Client{
 				Transport: transport,
 			}
 			resp, err := client.Post("https://bots.qq.com/app/getAppAccessToken",
 				"application/json",
-				strings.NewReader(`{"appId":"`+appID+`","clientSecret":"`+token+`"}`))
+				strings.NewReader(`{"appId":"`+appID+`","clientSecret":"`+appSecret+`"}`))
 			if err != nil {
 				return nil, fmt.Errorf("get access token failed: %w", err)
 			}
@@ -83,12 +81,10 @@ func HandleAeuthnticate(transport http.RoundTripper, appID string, token string)
 			}
 			signal.AccessToken = structureBody.AccessToken
 			signal.Expire = time.Now().Add(time.Second * time.Duration(expiresIn))
-			lock.Unlock()
-			lock.RLock()
 		}
 		req.Header.Set("Authorization", "QQBot "+signal.AccessToken)
 		req.Header.Set("X-Union-Appid", appID)
-		lock.RUnlock()
+		lock.Unlock()
 		return transport.RoundTrip(req)
 	})
 }

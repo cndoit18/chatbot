@@ -21,6 +21,10 @@ func main() {
 		panic(err)
 	}
 
+	_, err = client.Post("https://sandbox.api.sgroup.qq.com/v2/groups/"+os.Getenv("GROUP_ID")+"/messages", "application/json", strings.NewReader(`{"content":"Hello World!","msg_type":0}`))
+	if err != nil {
+		panic(err)
+	}
 }
 
 type TransportFunc func(req *http.Request) (*http.Response, error)
